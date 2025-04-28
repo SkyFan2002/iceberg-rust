@@ -281,6 +281,16 @@ impl InputFile {
     pub async fn reader(&self) -> crate::Result<impl FileRead> {
         Ok(self.op.reader(&self.path[self.relative_path_pos..]).await?)
     }
+
+    /// Returns [`Operator`]
+    pub fn get_operator(&self) -> &Operator {
+        &self.op
+    }
+
+    /// Returns self.relative_path_pos
+    pub fn relative_path_pos(&self) -> usize {
+        self.relative_path_pos
+    }
 }
 
 /// Trait for writing file.
