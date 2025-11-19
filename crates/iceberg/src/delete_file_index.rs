@@ -16,11 +16,8 @@
 // under the License.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::ops::Deref;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
-use std::task::{Context, Poll};
 
 use futures::channel::mpsc::{channel, Sender};
 use futures::StreamExt;
@@ -29,7 +26,6 @@ use tokio::sync::Notify;
 use crate::runtime::spawn;
 use crate::scan::{DeleteFileContext, FileScanTaskDeleteFile};
 use crate::spec::{DataContentType, DataFile, Struct};
-use crate::{Error, ErrorKind, Result};
 
 /// Index of delete files
 #[derive(Clone, Debug)]
