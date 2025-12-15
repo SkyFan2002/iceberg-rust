@@ -39,7 +39,7 @@ use parquet::arrow::arrow_reader::{
 };
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask, PARQUET_FIELD_ID_META_KEY};
-use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader, RowGroupMetaData};
+use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader, RowGroupMetaData};
 use parquet::schema::types::{SchemaDescriptor, Type as ParquetType};
 
 use crate::arrow::delete_file_manager::CachingDeleteFileManager;
@@ -1384,11 +1384,15 @@ impl<R: FileRead> AsyncFileReader for ArrowFileReader<R> {
         _options: Option<&'_ ArrowReaderOptions>,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         async move {
+            let column_policy = PageIndexPolicy::from(self.preload_column_index);
+            let offset_policy = PageIndexPolicy::from(self.preload_offset_index);
+            let page_policy = PageIndexPolicy::from(self.preload_page_index);
+
             let reader = ParquetMetaDataReader::new()
                 .with_prefetch_hint(self.metadata_size_hint)
-                .with_column_indexes(self.preload_column_index)
-                .with_page_indexes(self.preload_page_index)
-                .with_offset_indexes(self.preload_offset_index);
+                .with_column_index_policy(column_policy)
+                .with_page_index_policy(page_policy)
+                .with_offset_index_policy(offset_policy);
             let size = self.meta.size;
             let meta = reader.load_and_finish(self, size).await?;
 
