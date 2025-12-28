@@ -19,12 +19,12 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::str::FromStr;
 
-use apache_avro::{from_value, to_value, Reader as AvroReader, Writer as AvroWriter};
+use apache_avro::{Reader as AvroReader, Writer as AvroWriter, from_value, to_value};
 use serde_derive::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 use super::_serde::DataFileSerde;
-use super::{data_file_schema_v1, data_file_schema_v2, Datum, FormatVersion, Schema};
+use super::{Datum, FormatVersion, Schema, data_file_schema_v1, data_file_schema_v2};
 use crate::error::Result;
 use crate::spec::{Struct, StructType};
 use crate::{Error, ErrorKind};
@@ -135,7 +135,7 @@ pub struct DataFile {
     /// otherwise. Fields with ids listed in this column must be present
     /// in the delete file
     #[builder(default)]
-    pub(crate) equality_ids: Vec<i32>,
+    pub(crate) equality_ids: Option<Vec<i32>>,
     /// field id: 140
     ///
     /// ID representing sort order for this file.
@@ -249,8 +249,8 @@ impl DataFile {
     /// Get the equality ids of the data file.
     /// Field ids used to determine row equality in equality delete files.
     /// null when content is not EqualityDeletes.
-    pub fn equality_ids(&self) -> &[i32] {
-        &self.equality_ids
+    pub fn equality_ids(&self) -> Option<Vec<i32>> {
+        self.equality_ids.clone()
     }
     /// Get the first row id in the data file.
     pub fn first_row_id(&self) -> Option<i64> {
@@ -297,8 +297,12 @@ pub fn write_data_files_to_avro<W: Write>(
     let mut writer = AvroWriter::new(&avro_schema, writer);
 
     for data_file in data_files {
-        let value = to_value(DataFileSerde::try_from(data_file, partition_type, true)?)?
-            .resolve(&avro_schema)?;
+        let value = to_value(DataFileSerde::try_from(
+            data_file,
+            partition_type,
+            FormatVersion::V1,
+        )?)?
+        .resolve(&avro_schema)?;
         writer.append(value)?;
     }
 
@@ -333,9 +337,10 @@ pub fn read_data_files_from_avro<R: Read>(
 
 /// Type of content stored by the data file: data, equality deletes, or
 /// position deletes (all v1 files are data files)
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Default)]
 pub enum DataContentType {
     /// value: 0
+    #[default]
     Data = 0,
     /// value: 1
     PositionDeletes = 1,
@@ -397,5 +402,19 @@ impl std::fmt::Display for DataFileFormat {
             DataFileFormat::Parquet => write!(f, "parquet"),
             DataFileFormat::Puffin => write!(f, "puffin"),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::spec::DataContentType;
+    #[test]
+    fn test_data_content_type_default() {
+        assert_eq!(DataContentType::default(), DataContentType::Data);
+    }
+
+    #[test]
+    fn test_data_content_type_default_value() {
+        assert_eq!(DataContentType::default() as i32, 0);
     }
 }

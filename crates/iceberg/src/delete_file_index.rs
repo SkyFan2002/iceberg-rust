@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use futures::channel::mpsc::{channel, Sender};
 use futures::StreamExt;
+use futures::channel::mpsc::{Sender, channel};
 use tokio::sync::Notify;
 
 use crate::runtime::spawn;
@@ -28,7 +28,7 @@ use crate::scan::{DeleteFileContext, FileScanTaskDeleteFile};
 use crate::spec::{DataContentType, DataFile, Struct};
 
 /// Index of delete files
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DeleteFileIndex {
     state: Arc<RwLock<DeleteFileIndexState>>,
 }
@@ -73,7 +73,7 @@ impl DeleteFileIndex {
                     let mut guard = state.write().unwrap();
                     *guard = DeleteFileIndexState::Populated(populated_delete_file_index);
                 }
-                notify.notify_waiters()
+                notify.notify_waiters();
             }
         });
 
@@ -81,11 +81,9 @@ impl DeleteFileIndex {
     }
 
     /// Gets all the delete files that apply to the specified data file.
-    ///
-    /// Returns a future that resolves to a Result<Vec<FileScanTaskDeleteFile>>
-    pub(crate) async fn get_deletes_for_data_file<'a>(
+    pub(crate) async fn get_deletes_for_data_file(
         &self,
-        data_file: &'a DataFile,
+        data_file: &DataFile,
         seq_num: Option<i64>,
     ) -> Vec<FileScanTaskDeleteFile> {
         let notifier = {
@@ -116,7 +114,7 @@ impl PopulatedDeleteFileIndex {
     ///
     /// 1. The partition information is extracted from each delete file's manifest entry.
     /// 2. If the partition is empty and the delete file is not a positional delete,
-    ///    it is added to the `global_delees` vector
+    ///    it is added to the `global_deletes` vector
     /// 3. Otherwise, the delete file is added to one of two hash maps based on its content type.
     fn new(files: Vec<DeleteFileContext>) -> PopulatedDeleteFileIndex {
         let mut eq_deletes_by_partition: HashMap<Struct, Vec<Arc<DeleteFileContext>>> =

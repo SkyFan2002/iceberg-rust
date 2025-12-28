@@ -20,10 +20,10 @@
 use arrow_array::RecordBatch;
 use itertools::Itertools;
 
+use crate::Result;
 use crate::spec::{DataContentType, DataFile, Struct};
 use crate::writer::file_writer::{FileWriter, FileWriterBuilder};
 use crate::writer::{CurrentFileStatus, IcebergWriter, IcebergWriterBuilder};
-use crate::Result;
 
 /// Builder for `DataFileWriter`.
 #[derive(Clone, Debug)]
@@ -108,28 +108,30 @@ mod test {
 
     use arrow_array::{Int32Array, StringArray};
     use arrow_schema::{DataType, Field};
-    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use parquet::file::properties::WriterProperties;
     use tempfile::TempDir;
 
+    use crate::Result;
     use crate::io::FileIOBuilder;
     use crate::spec::{
         DataContentType, DataFileFormat, Literal, NestedField, PrimitiveType, Schema, Struct, Type,
     };
     use crate::writer::base_writer::data_file_writer::DataFileWriterBuilder;
-    use crate::writer::file_writer::location_generator::test::MockLocationGenerator;
-    use crate::writer::file_writer::location_generator::DefaultFileNameGenerator;
     use crate::writer::file_writer::ParquetWriterBuilder;
+    use crate::writer::file_writer::location_generator::{
+        DefaultFileNameGenerator, DefaultLocationGenerator,
+    };
     use crate::writer::{IcebergWriter, IcebergWriterBuilder, RecordBatch};
-    use crate::Result;
 
     #[tokio::test]
     async fn test_parquet_writer() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
         let file_io = FileIOBuilder::new_fs_io().build().unwrap();
-        let location_gen =
-            MockLocationGenerator::new(temp_dir.path().to_str().unwrap().to_string());
+        let location_gen = DefaultLocationGenerator::with_data_location(
+            temp_dir.path().to_str().unwrap().to_string(),
+        );
         let file_name_gen =
             DefaultFileNameGenerator::new("test".to_string(), None, DataFileFormat::Parquet);
 
@@ -144,6 +146,7 @@ mod test {
         let pw = ParquetWriterBuilder::new(
             WriterProperties::builder().build(),
             Arc::new(schema),
+            None,
             file_io.clone(),
             location_gen,
             file_name_gen,
@@ -200,8 +203,9 @@ mod test {
     async fn test_parquet_writer_with_partition() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
         let file_io = FileIOBuilder::new_fs_io().build().unwrap();
-        let location_gen =
-            MockLocationGenerator::new(temp_dir.path().to_str().unwrap().to_string());
+        let location_gen = DefaultLocationGenerator::with_data_location(
+            temp_dir.path().to_str().unwrap().to_string(),
+        );
         let file_name_gen = DefaultFileNameGenerator::new(
             "test_partitioned".to_string(),
             None,
@@ -221,6 +225,7 @@ mod test {
         let parquet_writer_builder = ParquetWriterBuilder::new(
             WriterProperties::builder().build(),
             Arc::new(schema.clone()),
+            None,
             file_io.clone(),
             location_gen,
             file_name_gen,

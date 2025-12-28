@@ -156,7 +156,7 @@ impl<B: FileWriterBuilder> IcebergWriter for EqualityDeleteFileWriter<B> {
                 .into_iter()
                 .map(|mut res| {
                     res.content(crate::spec::DataContentType::EqualityDeletes);
-                    res.equality_ids(self.equality_ids.iter().copied().collect_vec());
+                    res.equality_ids(Some(self.equality_ids.iter().copied().collect_vec()));
                     res.partition(self.partition_value.clone());
                     res.partition_spec_id(self.partition_spec_id);
                     res.build().expect("msg")
@@ -182,8 +182,8 @@ mod test {
     use arrow_schema::{DataType, Field, Fields};
     use arrow_select::concat::concat_batches;
     use itertools::Itertools;
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use parquet::file::properties::WriterProperties;
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -197,9 +197,10 @@ mod test {
     use crate::writer::base_writer::equality_delete_writer::{
         EqualityDeleteFileWriterBuilder, EqualityDeleteWriterConfig,
     };
-    use crate::writer::file_writer::location_generator::test::MockLocationGenerator;
-    use crate::writer::file_writer::location_generator::DefaultFileNameGenerator;
     use crate::writer::file_writer::ParquetWriterBuilder;
+    use crate::writer::file_writer::location_generator::{
+        DefaultFileNameGenerator, DefaultLocationGenerator,
+    };
     use crate::writer::{IcebergWriter, IcebergWriterBuilder};
 
     async fn check_parquet_data_file_with_equality_delete_write(
@@ -282,8 +283,9 @@ mod test {
     async fn test_equality_delete_writer() -> Result<(), anyhow::Error> {
         let temp_dir = TempDir::new().unwrap();
         let file_io = FileIOBuilder::new_fs_io().build().unwrap();
-        let location_gen =
-            MockLocationGenerator::new(temp_dir.path().to_str().unwrap().to_string());
+        let location_gen = DefaultLocationGenerator::with_data_location(
+            temp_dir.path().to_str().unwrap().to_string(),
+        );
         let file_name_gen =
             DefaultFileNameGenerator::new("test".to_string(), None, DataFileFormat::Parquet);
 
@@ -296,12 +298,10 @@ mod test {
                 NestedField::required(
                     1,
                     "col1",
-                    Type::Struct(StructType::new(vec![NestedField::required(
-                        5,
-                        "sub_col",
-                        Type::Primitive(PrimitiveType::Int),
-                    )
-                    .into()])),
+                    Type::Struct(StructType::new(vec![
+                        NestedField::required(5, "sub_col", Type::Primitive(PrimitiveType::Int))
+                            .into(),
+                    ])),
                 )
                 .into(),
                 NestedField::required(2, "col2", Type::Primitive(PrimitiveType::String)).into(),
@@ -317,17 +317,21 @@ mod test {
                 NestedField::required(
                     4,
                     "col4",
-                    Type::Struct(StructType::new(vec![NestedField::required(
-                        7,
-                        "sub_col",
-                        Type::Struct(StructType::new(vec![NestedField::required(
-                            8,
-                            "sub_sub_col",
-                            Type::Primitive(PrimitiveType::Int),
+                    Type::Struct(StructType::new(vec![
+                        NestedField::required(
+                            7,
+                            "sub_col",
+                            Type::Struct(StructType::new(vec![
+                                NestedField::required(
+                                    8,
+                                    "sub_sub_col",
+                                    Type::Primitive(PrimitiveType::Int),
+                                )
+                                .into(),
+                            ])),
                         )
-                        .into()])),
-                    )
-                    .into()])),
+                        .into(),
+                    ])),
                 )
                 .into(),
             ])
@@ -402,6 +406,7 @@ mod test {
         let pb = ParquetWriterBuilder::new(
             WriterProperties::builder().build(),
             Arc::new(delete_schema),
+            None,
             file_io.clone(),
             location_gen,
             file_name_gen,
@@ -439,23 +444,27 @@ mod test {
                     NestedField::required(
                         3,
                         "col3",
-                        Type::Struct(StructType::new(vec![NestedField::required(
-                            4,
-                            "sub_col",
-                            Type::Primitive(PrimitiveType::Int),
-                        )
-                        .into()])),
+                        Type::Struct(StructType::new(vec![
+                            NestedField::required(
+                                4,
+                                "sub_col",
+                                Type::Primitive(PrimitiveType::Int),
+                            )
+                            .into(),
+                        ])),
                     )
                     .into(),
                     NestedField::optional(
                         5,
                         "col4",
-                        Type::Struct(StructType::new(vec![NestedField::required(
-                            6,
-                            "sub_col2",
-                            Type::Primitive(PrimitiveType::Int),
-                        )
-                        .into()])),
+                        Type::Struct(StructType::new(vec![
+                            NestedField::required(
+                                6,
+                                "sub_col2",
+                                Type::Primitive(PrimitiveType::Int),
+                            )
+                            .into(),
+                        ])),
                     )
                     .into(),
                     NestedField::required(
@@ -511,8 +520,9 @@ mod test {
     async fn test_equality_delete_with_primitive_type() -> Result<(), anyhow::Error> {
         let temp_dir = TempDir::new().unwrap();
         let file_io = FileIOBuilder::new_fs_io().build().unwrap();
-        let location_gen =
-            MockLocationGenerator::new(temp_dir.path().to_str().unwrap().to_string());
+        let location_gen = DefaultLocationGenerator::with_data_location(
+            temp_dir.path().to_str().unwrap().to_string(),
+        );
         let file_name_gen =
             DefaultFileNameGenerator::new("test".to_string(), None, DataFileFormat::Parquet);
 
@@ -563,6 +573,7 @@ mod test {
         let pb = ParquetWriterBuilder::new(
             WriterProperties::builder().build(),
             Arc::new(delete_schema),
+            None,
             file_io.clone(),
             location_gen,
             file_name_gen,
@@ -674,28 +685,30 @@ mod test {
                 NestedField::optional(
                     1,
                     "col1",
-                    Type::Struct(StructType::new(vec![NestedField::optional(
-                        2,
-                        "sub_col",
-                        Type::Primitive(PrimitiveType::Int),
-                    )
-                    .into()])),
+                    Type::Struct(StructType::new(vec![
+                        NestedField::optional(2, "sub_col", Type::Primitive(PrimitiveType::Int))
+                            .into(),
+                    ])),
                 )
                 .into(),
                 NestedField::optional(
                     3,
                     "col2",
-                    Type::Struct(StructType::new(vec![NestedField::optional(
-                        4,
-                        "sub_struct_col",
-                        Type::Struct(StructType::new(vec![NestedField::optional(
-                            5,
-                            "sub_sub_col",
-                            Type::Primitive(PrimitiveType::Int),
+                    Type::Struct(StructType::new(vec![
+                        NestedField::optional(
+                            4,
+                            "sub_struct_col",
+                            Type::Struct(StructType::new(vec![
+                                NestedField::optional(
+                                    5,
+                                    "sub_sub_col",
+                                    Type::Primitive(PrimitiveType::Int),
+                                )
+                                .into(),
+                            ])),
                         )
-                        .into()])),
-                    )
-                    .into()])),
+                        .into(),
+                    ])),
                 )
                 .into(),
             ])
@@ -722,11 +735,14 @@ mod test {
             let inner_col = {
                 let nulls = NullBuffer::from(vec![true, false, true]);
                 Arc::new(StructArray::new(
-                    Fields::from(vec![Field::new("sub_sub_col", DataType::Int32, true)
-                        .with_metadata(HashMap::from([(
-                            PARQUET_FIELD_ID_META_KEY.to_string(),
-                            "5".to_string(),
-                        )]))]),
+                    Fields::from(vec![
+                        Field::new("sub_sub_col", DataType::Int32, true).with_metadata(
+                            HashMap::from([(
+                                PARQUET_FIELD_ID_META_KEY.to_string(),
+                                "5".to_string(),
+                            )]),
+                        ),
+                    ]),
                     vec![Arc::new(Int32Array::from(vec![Some(1), Some(2), None]))],
                     Some(nulls),
                 ))

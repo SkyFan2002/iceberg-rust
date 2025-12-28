@@ -176,6 +176,39 @@ impl PartitionSpec {
     }
 }
 
+/// A partition key represents a specific partition in a table, containing the partition spec,
+/// schema, and the actual partition values.
+#[derive(Clone, Debug)]
+pub struct PartitionKey {
+    /// The partition spec that contains the partition fields.
+    spec: PartitionSpec,
+    /// The schema to which the partition spec is bound.
+    schema: SchemaRef,
+    /// Partition fields' values in struct.
+    data: Struct,
+}
+
+impl PartitionKey {
+    /// Creates a new partition key with the given spec, schema, and data.
+    pub fn new(spec: PartitionSpec, schema: SchemaRef, data: Struct) -> Self {
+        Self { spec, schema, data }
+    }
+
+    /// Generates a partition path based on the partition values.
+    pub fn to_path(&self) -> String {
+        self.spec.partition_to_path(&self.data, self.schema.clone())
+    }
+
+    /// Returns `true` if the partition key is absent (`None`)
+    /// or represents an unpartitioned spec.
+    pub fn is_effectively_none(partition_key: Option<&PartitionKey>) -> bool {
+        match partition_key {
+            None => true,
+            Some(pk) => pk.spec.is_unpartitioned(),
+        }
+    }
+}
+
 /// Reference to [`UnboundPartitionSpec`].
 pub type UnboundPartitionSpecRef = Arc<UnboundPartitionSpec>;
 /// Unbound partition field can be built without a schema and later bound to a schema.
@@ -638,12 +671,14 @@ trait CorePartitionSpecValidator {
 
         if let Some(collision) = collision {
             Err(Error::new(
-                    ErrorKind::DataInvalid,
-                    format!(
-                        "Cannot add redundant partition with source id `{}` and transform `{}`. A partition with the same source id and transform already exists with name `{}`",
-                        source_id, transform.dedup_name(), collision.name
-                    ),
-                ))
+                ErrorKind::DataInvalid,
+                format!(
+                    "Cannot add redundant partition with source id `{}` and transform `{}`. A partition with the same source id and transform already exists with name `{}`",
+                    source_id,
+                    transform.dedup_name(),
+                    collision.name
+                ),
+            ))
         } else {
             Ok(())
         }
@@ -1198,24 +1233,20 @@ mod tests {
         });
         assert_eq!(
             spec.partition_type(&schema).unwrap(),
-            StructType::new(vec![NestedField::optional(
-                1000,
-                "id_bucket[16]",
-                Type::Primitive(PrimitiveType::Int)
-            )
-            .into()])
+            StructType::new(vec![
+                NestedField::optional(1000, "id_bucket[16]", Type::Primitive(PrimitiveType::Int))
+                    .into()
+            ])
         )
     }
 
     #[test]
     fn test_collision_with_schema_name() {
         let schema = Schema::builder()
-            .with_fields(vec![NestedField::required(
-                1,
-                "id",
-                Type::Primitive(crate::spec::PrimitiveType::Int),
-            )
-            .into()])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(crate::spec::PrimitiveType::Int))
+                    .into(),
+            ])
             .build()
             .unwrap();
 
@@ -1362,12 +1393,10 @@ mod tests {
     #[test]
     fn test_builder_incompatible_transforms_disallowed() {
         let schema = Schema::builder()
-            .with_fields(vec![NestedField::required(
-                1,
-                "id",
-                Type::Primitive(crate::spec::PrimitiveType::Int),
-            )
-            .into()])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(crate::spec::PrimitiveType::Int))
+                    .into(),
+            ])
             .build()
             .unwrap();
 
@@ -1452,12 +1481,10 @@ mod tests {
     #[test]
     fn test_not_compatible_with_transform_different() {
         let schema = Schema::builder()
-            .with_fields(vec![NestedField::required(
-                1,
-                "id",
-                Type::Primitive(crate::spec::PrimitiveType::Int),
-            )
-            .into()])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(crate::spec::PrimitiveType::Int))
+                    .into(),
+            ])
             .build()
             .unwrap();
 
@@ -1778,7 +1805,7 @@ mod tests {
 
         assert_eq!(
             spec.partition_to_path(&data, schema.into()),
-            "id=42/name=\"alice\""
+            "id=42/name=alice"
         );
     }
 }

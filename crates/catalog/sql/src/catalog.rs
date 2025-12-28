@@ -23,13 +23,12 @@ use iceberg::io::FileIO;
 use iceberg::spec::{TableMetadata, TableMetadataBuilder};
 use iceberg::table::Table;
 use iceberg::{
-    Catalog, Error, ErrorKind, Namespace, NamespaceIdent, Result, TableCommit, TableCreation,
-    TableIdent,
+    Catalog, Error, ErrorKind, MetadataLocation, Namespace, NamespaceIdent, Result, TableCommit,
+    TableCreation, TableIdent,
 };
-use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyQueryResult, AnyRow};
+use sqlx::any::{AnyPoolOptions, AnyQueryResult, AnyRow, install_default_drivers};
 use sqlx::{Any, AnyPool, Row, Transaction};
 use typed_builder::TypedBuilder;
-use uuid::Uuid;
 
 use crate::error::{
     from_sqlx_error, no_such_namespace_err, no_such_table_err, table_already_exists_err,
@@ -642,9 +641,7 @@ impl Catalog for SqlCatalog {
             .try_get::<String, _>(CATALOG_FIELD_METADATA_LOCATION_PROP)
             .map_err(from_sqlx_error)?;
 
-        let file = self.fileio.new_input(&tbl_metadata_location)?;
-        let metadata_content = file.read().await?;
-        let metadata = serde_json::from_slice::<TableMetadata>(&metadata_content)?;
+        let metadata = TableMetadata::read_from(&self.fileio, &tbl_metadata_location).await?;
 
         Ok(Table::builder()
             .file_io(self.fileio.clone())
@@ -702,14 +699,11 @@ impl Catalog for SqlCatalog {
         let tbl_metadata = TableMetadataBuilder::from_table_creation(tbl_creation)?
             .build()?
             .metadata;
-        let tbl_metadata_location = format!(
-            "{}/metadata/0-{}.metadata.json",
-            location.clone(),
-            Uuid::new_v4()
-        );
+        let tbl_metadata_location =
+            MetadataLocation::new_with_table_location(location.clone()).to_string();
 
-        let file = self.fileio.new_output(&tbl_metadata_location)?;
-        file.write(serde_json::to_vec(&tbl_metadata)?.into())
+        tbl_metadata
+            .write_to(&self.fileio, &tbl_metadata_location)
             .await?;
 
         self.execute(&format!(
@@ -767,6 +761,17 @@ impl Catalog for SqlCatalog {
         .await?;
 
         Ok(())
+    }
+
+    async fn register_table(
+        &self,
+        _table_ident: &TableIdent,
+        _metadata_location: String,
+    ) -> Result<Table> {
+        Err(Error::new(
+            ErrorKind::FeatureUnsupported,
+            "Registering a table is not supported yet",
+        ))
     }
 
     async fn update_table(&self, _commit: TableCommit) -> Result<Table> {
@@ -839,12 +844,9 @@ mod tests {
 
     fn simple_table_schema() -> Schema {
         Schema::builder()
-            .with_fields(vec![NestedField::required(
-                1,
-                "foo",
-                Type::Primitive(PrimitiveType::Int),
-            )
-            .into()])
+            .with_fields(vec![
+                NestedField::required(1, "foo", Type::Primitive(PrimitiveType::Int)).into(),
+            ])
             .build()
             .unwrap()
     }
@@ -1050,10 +1052,12 @@ mod tests {
         let namespace_ident = NamespaceIdent::new("a".into());
         create_namespace(&catalog, &namespace_ident).await;
 
-        assert!(!catalog
-            .namespace_exists(&NamespaceIdent::new("b".into()))
-            .await
-            .unwrap());
+        assert!(
+            !catalog
+                .namespace_exists(&NamespaceIdent::new("b".into()))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1162,6 +1166,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_namespace_noop() {
+        let warehouse_loc = temp_path();
+        let catalog = new_sql_catalog(warehouse_loc).await;
+        let namespace_ident = NamespaceIdent::new("a".into());
+        create_namespace(&catalog, &namespace_ident).await;
+
+        catalog
+            .update_namespace(&namespace_ident, HashMap::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *catalog
+                .get_namespace(&namespace_ident)
+                .await
+                .unwrap()
+                .properties(),
+            HashMap::from_iter([("exists".to_string(), "true".to_string())])
+        )
+    }
+
+    #[tokio::test]
+    async fn test_update_namespace() {
+        let warehouse_loc = temp_path();
+        let catalog = new_sql_catalog(warehouse_loc).await;
+        let namespace_ident = NamespaceIdent::new("a".into());
+        create_namespace(&catalog, &namespace_ident).await;
+
+        let mut props = HashMap::from_iter([
+            ("prop1".to_string(), "val1".to_string()),
+            ("prop2".into(), "val2".into()),
+        ]);
+
+        catalog
+            .update_namespace(&namespace_ident, props.clone())
+            .await
+            .unwrap();
+
+        props.insert("exists".into(), "true".into());
+
+        assert_eq!(
+            *catalog
+                .get_namespace(&namespace_ident)
+                .await
+                .unwrap()
+                .properties(),
+            props
+        )
+    }
+
+    #[tokio::test]
+    async fn test_update_nested_namespace() {
+        let warehouse_loc = temp_path();
+        let catalog = new_sql_catalog(warehouse_loc).await;
+        let namespace_ident = NamespaceIdent::from_strs(["a", "b"]).unwrap();
+        create_namespace(&catalog, &namespace_ident).await;
+
+        let mut props = HashMap::from_iter([
+            ("prop1".to_string(), "val1".to_string()),
+            ("prop2".into(), "val2".into()),
+        ]);
+
+        catalog
+            .update_namespace(&namespace_ident, props.clone())
+            .await
+            .unwrap();
+
+        props.insert("exists".into(), "true".into());
+
+        assert_eq!(
+            *catalog
+                .get_namespace(&namespace_ident)
+                .await
+                .unwrap()
+                .properties(),
+            props
+        )
+    }
+
+    #[tokio::test]
+    async fn test_update_namespace_errors_if_namespace_doesnt_exist() {
+        let warehouse_loc = temp_path();
+        let catalog = new_sql_catalog(warehouse_loc).await;
+        let namespace_ident = NamespaceIdent::new("a".into());
+
+        let props = HashMap::from_iter([
+            ("prop1".to_string(), "val1".to_string()),
+            ("prop2".into(), "val2".into()),
+        ]);
+
+        let err = catalog
+            .update_namespace(&namespace_ident, props)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.message(),
+            format!("No such namespace: {:?}", namespace_ident)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_namespace_errors_if_nested_namespace_doesnt_exist() {
+        let warehouse_loc = temp_path();
+        let catalog = new_sql_catalog(warehouse_loc).await;
+        let namespace_ident = NamespaceIdent::from_strs(["a", "b"]).unwrap();
+
+        let props = HashMap::from_iter([
+            ("prop1".to_string(), "val1".to_string()),
+            ("prop2".into(), "val2".into()),
+        ]);
+
+        let err = catalog
+            .update_namespace(&namespace_ident, props)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.message(),
+            format!("No such namespace: {:?}", namespace_ident)
+        );
+    }
+
+    #[tokio::test]
     async fn test_drop_namespace() {
         let warehouse_loc = temp_path();
         let catalog = new_sql_catalog(warehouse_loc).await;
@@ -1183,10 +1311,12 @@ mod tests {
 
         catalog.drop_namespace(&namespace_ident_a_b).await.unwrap();
 
-        assert!(!catalog
-            .namespace_exists(&namespace_ident_a_b)
-            .await
-            .unwrap());
+        assert!(
+            !catalog
+                .namespace_exists(&namespace_ident_a_b)
+                .await
+                .unwrap()
+        );
 
         assert!(catalog.namespace_exists(&namespace_ident_a).await.unwrap());
     }
@@ -1210,15 +1340,19 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!catalog
-            .namespace_exists(&namespace_ident_a_b_c)
-            .await
-            .unwrap());
+        assert!(
+            !catalog
+                .namespace_exists(&namespace_ident_a_b_c)
+                .await
+                .unwrap()
+        );
 
-        assert!(catalog
-            .namespace_exists(&namespace_ident_a_b)
-            .await
-            .unwrap());
+        assert!(
+            catalog
+                .namespace_exists(&namespace_ident_a_b)
+                .await
+                .unwrap()
+        );
 
         assert!(catalog.namespace_exists(&namespace_ident_a).await.unwrap());
     }
@@ -1275,10 +1409,12 @@ mod tests {
 
         assert!(!catalog.namespace_exists(&namespace_ident_a).await.unwrap());
 
-        assert!(catalog
-            .namespace_exists(&namespace_ident_a_b)
-            .await
-            .unwrap());
+        assert!(
+            catalog
+                .namespace_exists(&namespace_ident_a_b)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1341,11 +1477,13 @@ mod tests {
 
         assert_table_eq(&table, &expected_table_ident, &simple_table_schema());
 
-        assert!(table
-            .metadata_location()
-            .unwrap()
-            .to_string()
-            .starts_with(&location))
+        assert!(
+            table
+                .metadata_location()
+                .unwrap()
+                .to_string()
+                .starts_with(&location)
+        )
     }
 
     #[tokio::test]
@@ -1368,7 +1506,7 @@ mod tests {
         let table_name = "tbl1";
         let expected_table_ident = TableIdent::new(namespace_ident.clone(), table_name.into());
         let expected_table_metadata_location_regex = format!(
-            "^{}/tbl1/metadata/0-{}.metadata.json$",
+            "^{}/tbl1/metadata/00000-{}.metadata.json$",
             namespace_location, UUID_REGEX_STR,
         );
 
@@ -1392,8 +1530,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_in_nested_namespace_falls_back_to_nested_namespace_location_if_table_location_is_missing(
-    ) {
+    async fn test_create_table_in_nested_namespace_falls_back_to_nested_namespace_location_if_table_location_is_missing()
+     {
         let warehouse_loc = temp_path();
         let catalog = new_sql_catalog(warehouse_loc).await;
 
@@ -1425,7 +1563,7 @@ mod tests {
         let expected_table_ident =
             TableIdent::new(nested_namespace_ident.clone(), table_name.into());
         let expected_table_metadata_location_regex = format!(
-            "^{}/tbl1/metadata/0-{}.metadata.json$",
+            "^{}/tbl1/metadata/00000-{}.metadata.json$",
             nested_namespace_location, UUID_REGEX_STR,
         );
 
@@ -1449,8 +1587,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_falls_back_to_warehouse_location_if_both_table_location_and_namespace_location_are_missing(
-    ) {
+    async fn test_create_table_falls_back_to_warehouse_location_if_both_table_location_and_namespace_location_are_missing()
+     {
         let warehouse_loc = temp_path();
         let catalog = new_sql_catalog(warehouse_loc.clone()).await;
 
@@ -1465,7 +1603,7 @@ mod tests {
         let table_name = "tbl1";
         let expected_table_ident = TableIdent::new(namespace_ident.clone(), table_name.into());
         let expected_table_metadata_location_regex = format!(
-            "^{}/a/tbl1/metadata/0-{}.metadata.json$",
+            "^{}/a/tbl1/metadata/00000-{}.metadata.json$",
             warehouse_loc, UUID_REGEX_STR
         );
 
@@ -1489,8 +1627,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_in_nested_namespace_falls_back_to_warehouse_location_if_both_table_location_and_namespace_location_are_missing(
-    ) {
+    async fn test_create_table_in_nested_namespace_falls_back_to_warehouse_location_if_both_table_location_and_namespace_location_are_missing()
+     {
         let warehouse_loc = temp_path();
         let catalog = new_sql_catalog(warehouse_loc.clone()).await;
 
@@ -1504,7 +1642,7 @@ mod tests {
         let expected_table_ident =
             TableIdent::new(nested_namespace_ident.clone(), table_name.into());
         let expected_table_metadata_location_regex = format!(
-            "^{}/a/b/tbl1/metadata/0-{}.metadata.json$",
+            "^{}/a/b/tbl1/metadata/00000-{}.metadata.json$",
             warehouse_loc, UUID_REGEX_STR
         );
 
