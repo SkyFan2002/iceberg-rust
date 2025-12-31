@@ -43,6 +43,7 @@ use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataR
 use parquet::schema::types::{SchemaDescriptor, Type as ParquetType};
 
 use crate::arrow::delete_file_manager::CachingDeleteFileManager;
+use crate::arrow::record_batch_projector::RecordBatchProjector;
 use crate::arrow::record_batch_transformer::RecordBatchTransformer;
 use crate::arrow::{arrow_schema_to_schema, get_arrow_datum};
 use crate::delete_vector::DeleteVector;
@@ -198,6 +199,53 @@ impl ArrowReader {
         )?;
         record_batch_stream_builder = record_batch_stream_builder.with_projection(projection_mask);
 
+        let has_nested_fields = task
+            .project_field_ids
+            .iter()
+            .any(|id| task.schema.as_struct().field_by_id(*id).is_none());
+        let projector = if has_nested_fields {
+            let projected_arrow_schema = record_batch_stream_builder.schema();
+            let projected_iceberg_schema = arrow_schema_to_schema(&projected_arrow_schema)?;
+            let available_field_ids: HashSet<i32> = projected_iceberg_schema
+                .field_id_to_name_map()
+                .keys()
+                .copied()
+                .collect();
+            let projectable_field_ids = task
+                .project_field_ids
+                .iter()
+                .copied()
+                .filter(|id| available_field_ids.contains(id))
+                .collect::<Vec<_>>();
+            if projectable_field_ids.is_empty() {
+                None
+            } else {
+                Some(RecordBatchProjector::new(
+                    projected_arrow_schema.clone(),
+                    &projectable_field_ids,
+                    |field| {
+                        field
+                            .metadata()
+                            .get(PARQUET_FIELD_ID_META_KEY)
+                            .map(|value| {
+                                value.parse::<i64>().map_err(|e| {
+                                    Error::new(
+                                        ErrorKind::DataInvalid,
+                                        "field id not parseable as an i64".to_string(),
+                                    )
+                                    .with_context("value", value)
+                                    .with_source(e)
+                                })
+                            })
+                            .transpose()
+                    },
+                    |_| true,
+                )?)
+            }
+        } else {
+            None
+        };
+
         // RecordBatchTransformer performs any transformations required on the RecordBatches
         // that come back from the file, such as type promotion, default column insertion
         // and column re-ordering
@@ -308,11 +356,17 @@ impl ArrowReader {
 
         // Build the batch stream and send all the RecordBatches that it generates
         // to the requester.
+        let mut projector = projector.clone();
         let record_batch_stream =
             record_batch_stream_builder
                 .build()?
                 .map(move |batch| match batch {
-                    Ok(batch) => record_batch_transformer.process_record_batch(batch),
+                    Ok(mut batch) => {
+                        if let Some(projector) = &mut projector {
+                            batch = projector.project_batch(batch)?;
+                        }
+                        record_batch_transformer.process_record_batch(batch)
+                    }
                     Err(err) => Err(err.into()),
                 });
 
