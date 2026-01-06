@@ -27,7 +27,6 @@ use itertools::Itertools;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::async_writer::AsyncFileWriter as ArrowAsyncFileWriter;
-use parquet::file::metadata::ParquetMetaData;
 use parquet::file::properties::WriterProperties;
 use parquet::file::statistics::Statistics;
 
@@ -332,7 +331,8 @@ impl ParquetWriter {
             })?;
             let mut builder = ParquetWriter::parquet_to_data_file_builder(
                 table_metadata.current_schema().clone(),
-                parquet_metadata,
+                parquet_metadata.row_groups(),
+                parquet_metadata.file_metadata().num_rows(),
                 file_size_in_bytes,
                 file_path,
                 // TODO: Implement nan_value_counts here
@@ -346,10 +346,11 @@ impl ParquetWriter {
         Ok(data_files)
     }
 
-    /// `ParquetMetadata` to data file builder
+    /// Row group metadata to data file builder
     pub(crate) fn parquet_to_data_file_builder(
         schema: SchemaRef,
-        metadata: Arc<ParquetMetaData>,
+        row_groups: &[parquet::file::metadata::RowGroupMetaData],
+        num_rows: i64,
         written_size: usize,
         file_path: String,
         nan_value_counts: HashMap<i32, u64>,
@@ -366,7 +367,7 @@ impl ParquetWriter {
             let mut per_col_null_val_num: HashMap<i32, u64> = HashMap::new();
             let mut min_max_agg = MinMaxColAggregator::new(schema);
 
-            for row_group in metadata.row_groups() {
+            for row_group in row_groups {
                 for column_chunk_metadata in row_group.columns() {
                     let parquet_path = column_chunk_metadata.column_descr().path().string();
 
@@ -402,7 +403,7 @@ impl ParquetWriter {
             .file_path(file_path)
             .file_format(DataFileFormat::Parquet)
             .partition(Struct::empty())
-            .record_count(metadata.file_metadata().num_rows() as u64)
+            .record_count(num_rows as u64)
             .file_size_in_bytes(written_size as u64)
             .column_sizes(column_sizes)
             .value_counts(value_counts)
@@ -413,8 +414,7 @@ impl ParquetWriter {
             .lower_bounds(lower_bounds)
             .upper_bounds(upper_bounds)
             .split_offsets(Some(
-                metadata
-                    .row_groups()
+                row_groups
                     .iter()
                     .filter_map(|group| group.file_offset())
                     .collect(),
@@ -522,7 +522,9 @@ impl FileWriter for ParquetWriter {
             None => return Ok(vec![]),
         };
 
-        let metadata = writer.finish().await.map_err(|err| {
+        let row_groups = writer.flushed_row_groups().to_vec();
+
+        let file_metadata = writer.finish().await.map_err(|err| {
             Error::new(ErrorKind::Unexpected, "Failed to finish parquet writer.").with_source(err)
         })?;
 
@@ -538,11 +540,10 @@ impl FileWriter for ParquetWriter {
             })?;
             Ok(vec![])
         } else {
-            let parquet_metadata = Arc::new(metadata);
-
             Ok(vec![Self::parquet_to_data_file_builder(
                 self.schema,
-                parquet_metadata,
+                &row_groups,
+                file_metadata.num_rows,
                 written_size,
                 self.output_file.location().to_string(),
                 self.nan_value_count_visitor.nan_value_counts,
