@@ -543,7 +543,7 @@ impl FileWriter for ParquetWriter {
             Ok(vec![Self::parquet_to_data_file_builder(
                 self.schema,
                 &row_groups,
-                file_metadata.num_rows,
+                file_metadata.file_metadata().num_rows(),
                 written_size,
                 self.output_file.location().to_string(),
                 self.nan_value_count_visitor.nan_value_counts,
