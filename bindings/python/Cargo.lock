@@ -3276,7 +3276,6 @@ name = "pyiceberg_core_rust"
 version = "0.8.0"
 dependencies = [
  "arrow",
- "datafusion",
  "datafusion-ffi",
  "iceberg",
  "iceberg-datafusion",
