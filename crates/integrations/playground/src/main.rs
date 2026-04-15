@@ -36,7 +36,7 @@ enum PrintFormat {
     Tsv,
     Table,
     Json,
-    NdJson,
+    Ndjson,
     Automatic,
 }
 
@@ -189,7 +189,7 @@ async fn execute_sql(ctx: &SessionContext, sql: &str, args: &Args) -> anyhow::Re
         PrintFormat::Csv => print_delimited(dataframe, b',', args.maxrows).await?,
         PrintFormat::Tsv => print_delimited(dataframe, b'\t', args.maxrows).await?,
         PrintFormat::Json => print_json(dataframe, args.maxrows, false).await?,
-        PrintFormat::NdJson => print_json(dataframe, args.maxrows, true).await?,
+        PrintFormat::Ndjson => print_json(dataframe, args.maxrows, true).await?,
     }
 
     Ok(())
