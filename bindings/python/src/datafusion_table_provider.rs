@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::sync::Arc;
 
-use datafusion::prelude::SessionContext;
 use datafusion::execution::TaskContextProvider;
+use datafusion::prelude::SessionContext;
 use datafusion_ffi::table_provider::FFI_TableProvider;
 use iceberg::TableIdent;
 use iceberg::io::FileIO;
